@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
 from anthropic import Anthropic
-from mcp import ClientSession, StdioServerParameters
+from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from contextlib import AsyncExitStack
 import json
@@ -10,6 +10,8 @@ import nest_asyncio
 nest_asyncio.apply()
 
 load_dotenv()
+
+MAX_TOKENS = 8192
 
 class MCP_ChatBot:
     def __init__(self):
@@ -101,49 +103,112 @@ class MCP_ChatBot:
             raise
     
     async def process_query(self, query):
-        messages = [{'role':'user', 'content':query}]
-        
+        messages = [{"role": "user", "content": query}]
+        response = self.anthropic.messages.create(
+            max_tokens=MAX_TOKENS,
+            model="claude-sonnet-4-6",
+            tools=self.available_tools,
+            messages=messages,
+        )
+
         while True:
-            response = self.anthropic.messages.create(
-                max_tokens = 2024,
-                model = 'claude-3-7-sonnet-20250219', 
-                tools = self.available_tools,
-                messages = messages
-            )
-            
             assistant_content = []
-            has_tool_use = False
-            
+            tool_uses = []
+
             for content in response.content:
-                if content.type == 'text':
+                if content.type == "text":
                     print(content.text)
                     assistant_content.append(content)
-                elif content.type == 'tool_use':
-                    has_tool_use = True
+                elif content.type == "tool_use":
                     assistant_content.append(content)
-                    messages.append({'role':'assistant', 'content':assistant_content})
-                    
-                    # Get session and call tool
-                    session = self.sessions.get(content.name)
-                    if not session:
-                        print(f"Tool '{content.name}' not found.")
-                        break
-                        
-                    result = await session.call_tool(content.name, arguments=content.input)
-                    messages.append({
-                        "role": "user", 
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": content.id,
-                                "content": result.content
-                            }
-                        ]
-                    })
-            
-            # Exit loop if no tool was used
-            if not has_tool_use:
+                    tool_uses.append(content)
+
+            if not tool_uses:
                 break
+
+            if response.stop_reason == "max_tokens":
+                print(
+                    "Warning: response hit max_tokens and may include incomplete tool calls. "
+                    "Retry the query or increase MAX_TOKENS."
+                )
+
+            messages.append({"role": "assistant", "content": assistant_content})
+
+            tool_results = []
+            for tool_use in tool_uses:
+                print(f"Calling tool {tool_use.name} with args {self._summarize_tool_args(tool_use.input)}")
+                session = self.sessions.get(tool_use.name)
+                if not session:
+                    error_message = f"Tool '{tool_use.name}' not found."
+                    print(f"Tool error ({tool_use.name}): {error_message}")
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use.id,
+                            "content": error_message,
+                            "is_error": True,
+                        }
+                    )
+                    continue
+
+                try:
+                    result = await session.call_tool(
+                        tool_use.name, arguments=tool_use.input
+                    )
+                    formatted = self._format_tool_result(result)
+                    if result.isError:
+                        print(f"Tool error ({tool_use.name}): {formatted}")
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use.id,
+                            "content": formatted,
+                            "is_error": result.isError,
+                        }
+                    )
+                except Exception as e:
+                    error_message = f"Tool execution failed: {e}"
+                    print(f"Tool error ({tool_use.name}): {error_message}")
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use.id,
+                            "content": error_message,
+                            "is_error": True,
+                        }
+                    )
+
+            messages.append({"role": "user", "content": tool_results})
+
+            response = self.anthropic.messages.create(
+                max_tokens=MAX_TOKENS,
+                model="claude-sonnet-4-6",
+                tools=self.available_tools,
+                messages=messages,
+            )
+
+    def _summarize_tool_args(self, args: dict) -> dict:
+        """Summarize tool args for logging without dumping huge content payloads."""
+        summary = {}
+        for key, value in args.items():
+            if isinstance(value, str) and len(value) > 120:
+                summary[key] = f"<string, {len(value)} chars>"
+            else:
+                summary[key] = value
+        return summary
+
+    def _format_tool_result(self, result: types.CallToolResult) -> str:
+        if not result.content:
+            return "The operation completed but didn't return any results."
+
+        parts = []
+        for block in result.content:
+            if hasattr(block, "text"):
+                parts.append(block.text)
+            else:
+                parts.append(str(block))
+
+        return "\n".join(parts)
 
     async def get_resource(self, resource_uri):
         session = self.sessions.get(resource_uri)
