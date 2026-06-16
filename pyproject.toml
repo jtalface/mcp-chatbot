@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-chat"
+version = "0.1.0"
+description = "Lesson 3 chatbot example with arXiv paper search tools"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "anthropic>=0.40.0",
+    "arxiv>=2.1.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+mcp-chat = "mcp_chat.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
