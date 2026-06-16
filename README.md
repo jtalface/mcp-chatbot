@@ -3,9 +3,9 @@
 This repo demonstrates Anthropic tool use for searching arXiv papers and extracting paper metadata — in **two ways**:
 
 1. **Direct tool use** — the original implementation where the chatbot calls Python functions in-process.
-2. **MCP client–server** — a full MCP integration where the chatbot connects to a separate MCP server over stdio.
+2. **MCP client–server** — a progressive set of MCP clients that connect to one or more MCP servers over stdio.
 
-Both chatbots expose the same capabilities (`search_papers`, `extract_info`) and use Claude (`claude-sonnet-4-6`) with the same agentic tool loop.
+Both approaches use Claude with an agentic tool loop. The MCP path builds in three stages (`mcp_chatbot-00.py` → `01` → `02`), each adding more MCP capabilities.
 
 ## Setup
 
@@ -59,19 +59,79 @@ User → Claude → execute_tool() → search_papers / extract_info (in-process)
 
 ### Approach 2: MCP client–server
 
-The chatbot acts as an MCP client. It spawns an MCP server as a subprocess, discovers tools over the MCP protocol, and routes Claude's tool calls through `session.call_tool()`.
+Three client versions are provided, each building on the previous lesson:
+
+| File | What it adds |
+|------|--------------|
+| `mcp_chatbot-00.py` | Single MCP server (research tools only) |
+| `mcp_chatbot-01.py` | Multiple MCP servers via `server_config.json` (filesystem, research, fetch) |
+| `mcp_chatbot-02.py` | Resources and prompts — browse saved papers with `@` syntax and run server prompts with `/prompt` |
+
+Run any version with:
 
 ```bash
-uv run mcp_chatbot.py
+uv run mcp_chatbot-00.py
+uv run mcp_chatbot-01.py
+uv run mcp_chatbot-02.py
 ```
 
 Or, with an activated venv:
 
 ```bash
-python mcp_chatbot.py
+python mcp_chatbot-01.py
 ```
 
-The MCP server can also be run standalone (e.g. for MCP Inspector):
+#### `mcp_chatbot-00.py` — single server
+
+Connects to the research MCP server only (`search_papers`, `extract_info`).
+
+**Flow:**
+
+```
+User → Claude → MCP client → stdio → research server → search_papers / extract_info
+```
+
+#### `mcp_chatbot-01.py` — multi-server tools
+
+Loads all servers from `server_config.json` and routes tool calls to the correct session. Includes parallel tool-call handling, MCP error surfacing, and a higher token limit for large file writes.
+
+Configured servers:
+
+| Server | Tools |
+|--------|-------|
+| `filesystem` | read/write files, list directories |
+| `research` | `search_papers`, `extract_info` |
+| `fetch` | fetch web page content |
+
+**Flow:**
+
+```
+User → Claude → MCP client → stdio → [filesystem | research | fetch] servers
+```
+
+#### `mcp_chatbot-02.py` — resources and prompts
+
+Extends the multi-server client with MCP **resources** and **prompts** from the research server.
+
+Interactive commands in the chat loop:
+
+| Command | Description |
+|---------|-------------|
+| `@folders` | List saved paper topic folders |
+| `@<topic>` | Show papers saved for a topic (e.g. `@llm_interpretability`) |
+| `/prompts` | List available MCP prompts |
+| `/prompt <name> <arg=value>` | Execute a prompt (e.g. `/prompt generate_search_prompt topic=transformers num_papers=3`) |
+
+**Flow:**
+
+```
+User → @resource or /prompt → MCP client → read_resource / get_prompt
+User → query       → Claude → MCP client → call_tool → server
+```
+
+### MCP server (standalone)
+
+The research server can be run on its own (e.g. for MCP Inspector):
 
 ```bash
 uv run research_server.py
@@ -79,18 +139,32 @@ uv run research_server.py
 research-mcp
 ```
 
-**Flow:**
+It exposes:
 
-```
-User → Claude → MCP client → stdio → MCP server → search_papers / extract_info
-```
+- **Tools:** `search_papers`, `extract_info`
+- **Resources:** `papers://folders`, `papers://{topic}`
+- **Prompts:** `generate_search_prompt`
 
-### Example query
+### Example queries
 
-Works with either chatbot:
+Direct or MCP tool use:
 
 ```
 Search for 2 papers on "LLM interpretability"
+```
+
+Multi-server (`mcp_chatbot-01.py` or `02`):
+
+```
+Fetch the content of https://modelcontextprotocol.io/docs/concepts/architecture and save it to mcp_summary.md
+```
+
+Resources and prompts (`mcp_chatbot-02.py`):
+
+```
+@folders
+@llm_interpretability
+/prompt generate_search_prompt topic=agentic workflows num_papers=3
 ```
 
 Type `quit` at the prompt to exit.
@@ -98,31 +172,39 @@ Type `quit` at the prompt to exit.
 ## Project structure
 
 ```
-mcp_chatbot.py          # MCP client chatbot (Approach 2)
-research_server.py      # MCP server entry point (stdio)
+mcp_chatbot-00.py     # MCP client — single server
+mcp_chatbot-01.py     # MCP client — multi-server tools
+mcp_chatbot-02.py     # MCP client — multi-server tools + resources + prompts
+server_config.json    # MCP server definitions for 01 and 02
+research_server.py    # MCP server entry point (stdio)
 src/mcp_chat/
-├── tools.py            # Tool implementations + FastMCP server
+├── tools.py            # Tool implementations + FastMCP server (tools, resources, prompts)
 ├── schemas.py          # Anthropic tool definitions (Approach 1)
 ├── executor.py         # Direct tool dispatch (Approach 1)
 ├── chatbot.py          # Direct tool-use chat loop (Approach 1)
 └── __main__.py         # CLI entry point for mcp-chat
 ```
 
-| File | Role in Approach 1 | Role in Approach 2 |
-|------|--------------------|--------------------|
-| `chatbot.py` | Chat loop + Claude tool use | — |
-| `schemas.py` | Tool schemas sent to Claude | — |
-| `executor.py` | Runs tools in-process | — |
-| `tools.py` | Tool function implementations | Same functions, exposed via FastMCP |
-| `mcp_chatbot.py` | — | MCP client + Claude tool loop |
-| `research_server.py` | — | Starts the MCP server |
+| File | Approach 1 | MCP 00 | MCP 01 | MCP 02 |
+|------|-----------|--------|--------|--------|
+| `chatbot.py` | Chat loop + Claude tool use | — | — | — |
+| `schemas.py` | Tool schemas sent to Claude | — | — | — |
+| `executor.py` | Runs tools in-process | — | — | — |
+| `tools.py` | Tool implementations | FastMCP server | FastMCP server | + resources & prompts |
+| `mcp_chatbot-00.py` | — | Single-server client | — | — |
+| `mcp_chatbot-01.py` | — | — | Multi-server client | — |
+| `mcp_chatbot-02.py` | — | — | — | + resources & prompts |
+| `server_config.json` | — | — | Server config | Server config |
+| `research_server.py` | — | Server entry | Server entry | Server entry |
 
 Paper search results are saved under `papers/` at runtime (gitignored).
 
 ## When to use which
 
-- **Direct tool use** — simpler to read and debug; good for learning Anthropic tool use without MCP.
-- **MCP client–server** — matches production MCP patterns: tools run in a separate process, can be swapped or inspected independently, and work with MCP-compatible tooling (e.g. MCP Inspector).
+- **Direct tool use (`mcp-chat`)** — simplest to read and debug; good for learning Anthropic tool use without MCP.
+- **`mcp_chatbot-00.py`** — learn the basic MCP client–server handshake with one server.
+- **`mcp_chatbot-01.py`** — production-style multi-server setup with filesystem, fetch, and research tools.
+- **`mcp_chatbot-02.py`** — full MCP primitives: tools, resources, and prompts in one interactive client.
 
 ## Resources
 
