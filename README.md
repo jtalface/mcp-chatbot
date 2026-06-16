@@ -1,6 +1,6 @@
-# MCP Chat
+# MCP Chatbot
 
-Lesson 3 chatbot example from the MCP course. This repo demonstrates Anthropic tool use for searching arXiv papers and extracting paper metadata — in **two ways**:
+This repo demonstrates Anthropic tool use for searching arXiv papers and extracting paper metadata — in **two ways**:
 
 1. **Direct tool use** — the original implementation where the chatbot calls Python functions in-process.
 2. **MCP client–server** — a full MCP integration where the chatbot connects to a separate MCP server over stdio.
